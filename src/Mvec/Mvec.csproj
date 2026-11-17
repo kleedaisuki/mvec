@@ -10,8 +10,10 @@
     <VecBinary Condition="$([MSBuild]::IsOSPlatform('Windows'))">vec1.dll</VecBinary>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="Mvec.Journey" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.14" />
     <PackageReference Include="Tomlyn" Version="2.10.1" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.14" />
     <Content Include="$(VecBuild)/install/$(VecBinary)" Link="$(VecBinary)"
              CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <VecSource Include="$(VecRoot)/*" />

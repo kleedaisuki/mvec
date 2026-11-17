@@ -1,3 +1,4 @@
+using Mvec;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Security.Cryptography;
@@ -5,20 +6,6 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
-
-if (args is ["login", "status"])
-{
-    Console.WriteLine("Logged in using ChatGPT");
-    return;
-}
-
-if (args is ["exec", ..])
-{
-    var prompt = await Console.In.ReadToEndAsync();
-    File.AppendAllText(Environment.GetEnvironmentVariable("MVEC_SUMMARY_LOG")!, "generated\n");
-    Console.WriteLine($"A concise summary: {prompt.Split('\n', StringSplitOptions.RemoveEmptyEntries).Last()}");
-    return;
-}
 
 if (args.Length != 2)
     throw new ArgumentException("Usage: Mvec.Journey <published mvec> <scratch-directory>");
@@ -32,7 +19,6 @@ internal sealed class Journey(string executable, string scratch)
     private int voyageCalls;
     private int largestBatch;
     private string endpoint = "";
-    private string summaryLog = "";
     private const string Initial = "Native lowering emits machine code directly from the compiler intermediate representation.";
     private const string V2 = "V2GATE transient native lowering emits relocatable machine code from the intermediate representation.";
     private const string V3 = "V3GATE final native lowering translates compiler IR into register-allocated machine code.";
@@ -44,18 +30,22 @@ internal sealed class Journey(string executable, string scratch)
         Directory.CreateDirectory(scratch);
         var working = Path.Join(scratch, Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(working);
-        summaryLog = Path.Join(working, "summaries.log");
         var builder = WebApplication.CreateSlimBuilder();
         builder.Logging.ClearProviders();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
         await using var api = builder.Build();
         api.MapPost("/embeddings", EmbedAsync);
+        using var chat = new OAuthFixture();
+        chat.Map(api);
         await api.StartAsync();
-        endpoint = api.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single() + "/embeddings";
+        var address = api.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();
+        endpoint = address + "/embeddings";
+        chat.ListenAt(address);
         try
         {
             await ExactAsync(Path.Join(working, "exact"));
             await ApproximateAsync(Path.Join(working, "ann"));
+            await SummaryAsync(Path.Join(working, "oauth"), chat);
             Check(routerCalls > 0 && voyageCalls > 0 && largestBatch > 1, "both provider adapters and batching exercised");
             Console.WriteLine("mvec journey passed: exact and ANN, concurrent snapshots, deduplication, rename/delete, restart, isolation, summaries and MCP");
         }
@@ -114,20 +104,10 @@ internal sealed class Journey(string executable, string scratch)
                 "top-k returns available distinct files when the index is smaller");
 
             var miss = await CallAsync(project, true, "summary", "docs.txt", "--cache-only");
-            Check(Text(miss, "cache") == "miss" && !File.Exists(summaryLog), "no automatic summary");
-            Write(project, "summary.txt", Summary);
-            var fresh = await CallAsync(project, true, "summary", "summary.txt");
-            var cached = await CallAsync(project, true, "summary", "summary.txt");
-            Check(Text(fresh, "cache") == "generated" && Text(cached, "cache") == "exact"
-                && File.ReadAllLines(summaryLog).Length == 1, "identical version hits cache without invoking Codex");
-            Write(project, "summary.txt", Summary + "!");
-            var minor = await CallAsync(project, true, "summary", "summary.txt");
-            Check(Text(minor, "cache") == "small_change" && Text(minor, "summary_hash") != Text(minor, "document_hash")
-                && File.ReadAllLines(summaryLog).Length == 1, "small edit reuses a versioned summary");
-            Write(project, "summary.txt", "A new optimizer repairs invalid branches and simplifies control flow.");
-            var major = await CallAsync(project, true, "summary", "summary.txt");
-            Check(Text(major, "cache") == "generated" && File.ReadAllLines(summaryLog).Length == 2,
-                "large edit generates only on request");
+            Check(Text(miss, "cache") == "miss", "cache-only summary works without a ChatGPT login");
+            var denial = await RunAsync(project, "summary", "docs.txt");
+            Check(denial.Exit == 1 && Text(Parse(denial.Out).GetProperty("error"), "code") == "chatgpt_sign_in_required",
+                "the published daemon reports a missing OAuth session without spawning a program");
             await TestMcpAsync(project);
         }
 
@@ -139,10 +119,52 @@ internal sealed class Journey(string executable, string scratch)
         var previous = await SearchAsync(project, V3, 2);
         Check(ChunkAt(previous, "moved/lower.md") == V3, "durable snapshot usable during restart reconciliation");
         hold.Release();
-        await WaitPathsAsync(project, "restart reconciles offline changes", "moved/lower.md", "summary.txt", "offline.md");
-        var restart = await CallAsync(project, true, "summary", "summary.txt");
-        Check(Text(restart, "cache") == "exact" && File.ReadAllLines(summaryLog).Length == 2,
-            "summary persisted across daemon restart");
+        await WaitPathsAsync(project, "restart reconciles offline changes", "moved/lower.md", "offline.md");
+    }
+
+    private async Task SummaryAsync(string projectPath, OAuthFixture fixture)
+    {
+        await InitAsync(projectPath, "openrouter", "exact");
+        Write(projectPath, "summary.txt", Summary);
+        var project = new Project(projectPath);
+        using var http = new HttpClient();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        var ct = timeout.Token;
+        var oauth = new ChatGptOAuth(project, http, fixture.Endpoints);
+        await fixture.SignInAsync(oauth, ct);
+        using (var stop = CancellationTokenSource.CreateLinkedTokenSource(ct))
+        {
+            var daemon = Daemon.RunAsync(project, stop.Token, fixture.Endpoints);
+            try
+            {
+                await WaitAsync(projectPath, "OAuth summary daemon", Complete);
+                Check(fixture.Summaries == 0 && fixture.Refreshes == 0, "file indexing doesn't use the ChatGPT session");
+                var fresh = await CallAsync(projectPath, true, "summary", "summary.txt");
+                var cached = await CallAsync(projectPath, true, "summary", "summary.txt");
+                Check(Text(fresh, "cache") == "generated" && Text(fresh, "summary") == "A concise OAuth summary."
+                    && Text(cached, "cache") == "exact" && fixture.Summaries == 1 && fixture.Refreshes == 1,
+                    "configured model uses a refreshed OAuth credential and only a completed stream is cached");
+                Write(projectPath, "summary.txt", Summary + "!");
+                var minor = await CallAsync(projectPath, true, "summary", "summary.txt");
+                Check(Text(minor, "cache") == "small_change" && Text(minor, "summary_hash") != Text(minor, "document_hash")
+                    && fixture.Summaries == 1, "small edit reuses a versioned summary");
+                Write(projectPath, "summary.txt", "A new optimizer repairs invalid branches and simplifies control flow.");
+                fixture.Interrupt = true;
+                var interrupted = await RunAsync(projectPath, "summary", "summary.txt");
+                Check(interrupted.Exit == 1 && Text(await CallAsync(projectPath, true, "summary", "summary.txt", "--cache-only"), "cache") == "miss",
+                    "partial Responses streams never form cache entries");
+                fixture.Interrupt = false;
+                var major = await CallAsync(projectPath, true, "summary", "summary.txt");
+                Check(Text(major, "cache") == "generated" && fixture.Summaries == 3, "large edit regenerates only on request");
+                Check((await oauth.ModelsAsync(ct)).Single().Slug == OAuthFixture.Model, "account-specific list uses the same authorization");
+                Check(await oauth.SignOutAsync(ct) && fixture.Revocations == 1, "logout revokes the rotated token");
+            }
+            finally { await stop.CancelAsync(); await daemon; }
+        }
+        await using var restarted = StartDaemon(projectPath);
+        await WaitAsync(projectPath, "summary cache restart", Complete);
+        var restart = await CallAsync(projectPath, true, "summary", "summary.txt");
+        Check(Text(restart, "cache") == "exact" && fixture.Summaries == 3, "summary stays cached after restart and logout");
     }
 
     private async Task ApproximateAsync(string project)
@@ -174,7 +196,6 @@ internal sealed class Journey(string executable, string scratch)
     {
         Directory.CreateDirectory(project);
         await RunAsync(project, "init");
-        var fixture = Path.Join(AppContext.BaseDirectory, OperatingSystem.IsWindows() ? "Mvec.Journey.exe" : "Mvec.Journey");
         var name = provider == "voyage" ? "" : "mongodb/";
         File.WriteAllText(Path.Join(project, ".mvec", "config.toml"), $$"""
             [embedding]
@@ -197,7 +218,7 @@ internal sealed class Journey(string executable, string scratch)
 
             [summary]
             enabled = true
-            codex_path = {{JsonSerializer.Serialize(fixture)}}
+            model = "{{OAuthFixture.Model}}"
             """);
     }
 
@@ -354,7 +375,6 @@ internal sealed class Journey(string executable, string scratch)
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8
         };
-        psi.Environment["MVEC_SUMMARY_LOG"] = summaryLog;
         foreach (var arg in args)
             psi.ArgumentList.Add(arg);
         return Process.Start(psi)!;

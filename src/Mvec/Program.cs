@@ -1,3 +1,5 @@
+using System.ComponentModel;
+using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -39,6 +41,9 @@ internal static class Program
                   status               Show daemon and index status
                   search QUERY         Search files [--top-k N] [--mode exact|ann]
                   summary PATH         Get/generate a document summary [--cache-only]
+                  login                Authorize ChatGPT plan usage [--no-browser] [--port N]
+                  logout               Disconnect this project's ChatGPT session
+                  models               List ChatGPT model slugs for [summary].model
                   mcp                  Serve MCP over stdio, forwarding to the daemon
                 Without --project, use the nearest configured parent project.
                 """);
@@ -51,6 +56,8 @@ internal static class Program
         string? mode = null;
         int? k = null;
         var cacheOnly = false;
+        var noBrowser = false;
+        var port = 0;
         var parseOptions = true;
         for (var i = 1; i < args.Length; i++)
         {
@@ -67,6 +74,8 @@ internal static class Program
                 case "--top-k" when command == "search": k = int.Parse(Value(), CultureInfo.InvariantCulture); break;
                 case "--mode" when command == "search": mode = Value(); break;
                 case "--cache-only" when command == "summary": cacheOnly = true; break;
+                case "--no-browser" when command == "login": noBrowser = true; break;
+                case "--port" when command == "login": port = int.Parse(Value(), CultureInfo.InvariantCulture); break;
                 default: throw new ArgumentException($"Unknown option for {command}: {arg}");
             }
             string Value() => ++i < args.Length ? args[i] : throw new ArgumentException($"Expected a value for {arg}.");
@@ -91,6 +100,10 @@ internal static class Program
             case "serve":
                 await Daemon.RunAsync(project, ct);
                 return 0;
+            case "login":
+            case "logout":
+            case "models":
+                return await RunAccountAsync(project, command, noBrowser, port, ct);
             case "mcp":
                 await Mcp.RunAsync(project, ct);
                 return 0;
@@ -104,6 +117,39 @@ internal static class Program
                 return response.Ok ? 0 : 1;
             default:
                 throw new ArgumentException($"Unknown command: {command}");
+        }
+    }
+
+    private static async Task<int> RunAccountAsync(Project project, string command, bool noBrowser, int port, CancellationToken ct)
+    {
+        using var http = new HttpClient(new SocketsHttpHandler { AllowAutoRedirect = false })
+            { Timeout = TimeSpan.FromSeconds(30) };
+        var oauth = new ChatGptOAuth(project, http, ChatGptEndpoints.Official);
+        switch (command)
+        {
+            case "login":
+                if (!File.Exists(project.ConfigPath))
+                    throw new InvalidOperationException("Run mvec init in this project first.");
+                var account = await oauth.SignInAsync(port, uri =>
+                {
+                    Console.Error.WriteLine($"Continue with ChatGPT: {uri.AbsoluteUri}");
+                    if (!noBrowser)
+                    {
+                        try { Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true })?.Dispose(); }
+                        catch (Win32Exception) { Console.Error.WriteLine("Open the URL in a browser to continue."); }
+                    }
+                }, ct);
+                Console.WriteLine($"Authorized ChatGPT plan usage for {account}.");
+                return 0;
+            case "logout":
+                var revoked = await oauth.SignOutAsync(ct);
+                Console.WriteLine(revoked ? "Signed out of ChatGPT for this project."
+                    : "Local ChatGPT session removed. Remote revocation was not confirmed; disconnect mvec in ChatGPT Settings.");
+                return revoked ? 0 : 1;
+            default:
+                foreach (var model in await oauth.ModelsAsync(ct))
+                    Console.WriteLine($"{model.Slug}\t{model.Name}");
+                return 0;
         }
     }
 

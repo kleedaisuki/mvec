@@ -9,7 +9,7 @@ watcher + recovery scan  -> index worker -> batched document embeddings
                                            |
 clients -> local IPC -> query embedding -> committed read snapshot
 
-clients -> summary request -> versioned SQLite cache -> Codex only on miss
+clients -> summary request -> versioned SQLite cache -> Responses API only on miss
 ```
 
 - The daemon lock is held for the lifetime of the process. The watcher queues
@@ -53,3 +53,15 @@ clients -> summary request -> versioned SQLite cache -> Codex only on miss
   observed. This keeps small edits cumulative and makes it possible to return a
   cached summary by hash after a move. The writer uses the regular SQLite
   tables only. It is not invoked by the watcher.
+
+
+The ChatGPT OAuth session is separate from SQLite, the embedding key, and the
+summary cache. The browser return goes to a short-lived loopback listener.
+[Sign in with ChatGPT registration](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)
+uses a per-project stable host ID and issued client ID, PKCE and OIDC signature
+validation. Refresh and logout take an exclusive cross-process file lock so a
+rotating refresh token cannot be consumed twice. A local atomic replacement
+publishes the complete token set after renewal. Only a completed Responses
+stream is eligible to write a summary to SQLite. The application's published
+binary uses the official endpoints; the test harness injects a local OAuth and
+Responses fixture without adding an endpoint override to the CLI or TOML.

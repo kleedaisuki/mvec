@@ -2,4 +2,7 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
   </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Mvec/Mvec.csproj" />
+  </ItemGroup>
 </Project>

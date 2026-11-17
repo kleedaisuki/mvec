@@ -36,9 +36,9 @@ internal sealed class Config
         if (i.ChunkChars is < 128 or > 16000 || i.MaxFileBytes is < 128 or > 134_217_728
             || i.ReconcileSeconds is < 1 or > 86400)
             throw new InvalidDataException("Invalid [index] chunk_chars, max_file_bytes or reconcile_seconds.");
-        if (config.Summary.MaxChars is < 128 or > 1_000_000
+        if (string.IsNullOrWhiteSpace(config.Summary.Model) || config.Summary.MaxChars is < 128 or > 1_000_000
             || !(config.Summary.ChangeThreshold >= 0 && config.Summary.ChangeThreshold <= 1))
-            throw new InvalidDataException("Invalid [summary] max_chars or change_threshold.");
+            throw new InvalidDataException("Invalid [summary] model, max_chars or change_threshold.");
         return config;
     }
 
@@ -64,6 +64,7 @@ internal sealed class Config
 
         [summary]
         enabled = false
+        model = "gpt-6.1-sol"
         change_threshold = 0.15
         max_chars = 80000
         """;
@@ -120,12 +121,11 @@ internal sealed class IndexConfig
 internal sealed class SummaryConfig
 {
     [TomlPropertyName("enabled")] public bool Enabled { get; set; }
-    [TomlPropertyName("model")] public string? Model { get; set; }
-    [TomlPropertyName("codex_path")] public string CodexPath { get; set; } = "codex";
+    [TomlPropertyName("model")] public string Model { get; set; } = "gpt-6.1-sol";
     [TomlPropertyName("change_threshold")] public double ChangeThreshold { get; set; } = .15;
     [TomlPropertyName("max_chars")] public int MaxChars { get; set; } = 80_000;
 
-    public string Profile => Hash.OfText($"codex/v1\n{Model}");
+    public string Profile => Hash.OfText($"chatgpt-responses/v1\n{Model}");
 }
 
 [TomlSerializable(typeof(Config))]

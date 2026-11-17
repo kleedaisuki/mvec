@@ -28,4 +28,7 @@ internal sealed record SummaryReply(string Path, string? DocumentHash, string? S
 [JsonSerializable(typeof(VoyageRequest))]
 [JsonSerializable(typeof(RouterRequest))]
 [JsonSerializable(typeof(EmbeddingResponse))]
+[JsonSerializable(typeof(ChatGptSession))]
+[JsonSerializable(typeof(ChatGptToken))]
+[JsonSerializable(typeof(ChatGptRequest))]
 internal partial class Wire : JsonSerializerContext;

@@ -2,7 +2,7 @@ namespace Mvec;
 
 internal static class Daemon
 {
-    public static async Task RunAsync(Project project, CancellationToken ct)
+    public static async Task RunAsync(Project project, CancellationToken ct, ChatGptEndpoints? chatGptEndpoints = null)
     {
         var config = Config.Load(project);
         using var owner = Acquire(project);
@@ -13,7 +13,9 @@ internal static class Daemon
         }) { Timeout = TimeSpan.FromSeconds(90) };
         using var store = new Store(project, config);
         var embeddings = new Embeddings(http, config.Embedding);
-        using var summaries = new Summaries(project, config, store);
+        var endpoints = chatGptEndpoints ?? ChatGptEndpoints.Official;
+        using var summaries = new Summaries(project, config, store,
+            new ChatGptSummary(http, new ChatGptOAuth(project, http, endpoints), endpoints));
         using var indexer = new Indexer(project, config.Index, store, embeddings);
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var service = Ipc.ServeAsync(project, DispatchAsync, stop.Token);
@@ -22,6 +24,7 @@ internal static class Daemon
         {
             await await Task.WhenAny(service, maintenance);
         }
+        catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
         finally
         {
             await stop.CancelAsync();
@@ -45,6 +48,8 @@ internal static class Daemon
             }
             catch (ArgumentException ex) { return Reply.Fail("invalid_request", ex.Message); }
             catch (FileNotFoundException ex) { return Reply.Fail("not_found", ex.Message); }
+            catch (ChatGptException ex) { return Reply.Fail(ex.Code, ex.Message); }
+            catch (HttpRequestException ex) when (request.Method == "summary") { return Reply.Fail("chatgpt_request_failed", ex.Message); }
             catch (HttpRequestException ex) { return Reply.Fail("embedding_failed", ex.Message); }
             catch (OperationCanceledException) when (!token.IsCancellationRequested)
             {

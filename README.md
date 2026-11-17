@@ -49,7 +49,7 @@ Restart the daemon after editing it. Keep `.mvec/` out of version control.
 | | `probe`, `candidates` | Fraction of ANN buckets to probe and candidate multiplier. Larger values trade CPU for recall; request `--mode exact` to bypass ANN. |
 | `index` | `chunk_chars`, `max_file_bytes`, `reconcile_seconds` | Target characters per chunk, per-file byte limit, recovery scan interval. File watcher updates do not wait for this interval. |
 | | `exclude` | Extra basename patterns (`*` and `?`) matched against any path component. |
-| `summary` | `enabled`, `model`, `codex_path` | Off by default. Optional model and executable path for the separately authenticated Codex CLI. |
+| `summary` | `enabled`, `model` | Off by default. Set an account-available ChatGPT model slug; see `mvec models`. |
 | | `change_threshold`, `max_chars` | Fraction of changed text that triggers regeneration on request, and summary input size limit. |
 
 For direct Voyage, replace the embedding section with:
@@ -79,18 +79,43 @@ and cached summary source are local project data under `.mvec/`.
 
 ### On-demand summaries
 
-Install the [Codex CLI](https://learn.chatgpt.com/docs/developer-commands) and
-run `codex login` as the user running mvec, using ChatGPT account login. Set
-`[summary].enabled = true` and restart mvec. mvec invokes the official CLI with
-the requested document on stdin; it does not read or store OAuth credentials.
-The shell, plugins, and web search are disabled for this invocation. If Windows
-has only an npm command shim on PATH, set `codex_path` to the native
-`codex.exe` or put that executable on PATH.
+mvec uses [Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source)
+directly. There is no Codex or OpenAI API key requirement. From the project,
+log in as the OS user who runs the daemon, then list your account's models:
+
+```sh
+mvec login
+mvec models
+```
+
+The browser asks you to grant mvec permission to use your ChatGPT plan. Set
+the chosen model slug in `.mvec/config.toml` and restart the daemon:
+
+```toml
+[summary]
+enabled = true
+model = "gpt-6.1-sol" # Choose a slug printed by mvec models.
+```
 
 ```sh
 mvec summary docs/design.md               # Generates if missing/stale
-mvec summary docs/design.md --cache-only   # Never invokes Codex
+mvec summary docs/design.md --cache-only   # Never uses the ChatGPT session
+mvec logout                              # Revoke the project session
 ```
+
+The project keeps one linked account. `mvec login` reauthorizes that
+registration; `mvec logout` removes its session while retaining the
+registration and summary cache. Credentials under `.mvec/` are not portable:
+they are user-protected on Windows and owner-only on Unix. Do not share the
+project's state directory. Generation sends the requested file to OpenAI's
+[Responses API](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference)
+with the granted subscription scope. Embedding credentials are separate; there
+is no fallback to bill an API key. Manage app usage in
+[ChatGPT Settings → Usage](https://chatgpt.com/settings/usage).
+
+For an SSH host, forward a fixed loopback port (e.g. `ssh -L 1455:127.0.0.1:1455 user@host`),
+run `mvec login --no-browser --port 1455` on the host, and open the printed URL
+on the machine that initiated the SSH session.
 
 An identical SHA-256 content version returns the cached text. Small edits
 reuse the previous summary without advancing its baseline; repeated small
