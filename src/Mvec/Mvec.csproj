@@ -3,6 +3,7 @@
     <OutputType>Exe</OutputType>
     <AssemblyName>mvec</AssemblyName>
     <PublishAot>true</PublishAot>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <VecRoot>$(MSBuildThisFileDirectory)../../native/vec1</VecRoot>
     <VecBuild>$(MSBuildThisFileDirectory)obj/vec1</VecBuild>
     <VecBinary>vec1.so</VecBinary>

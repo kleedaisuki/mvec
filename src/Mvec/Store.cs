@@ -317,6 +317,15 @@ internal sealed class Store : IDisposable
         }
     }
 
+    public bool HasSearchableChunks()
+    {
+        lock (readGate)
+        {
+            using var cmd = Sql(reader, "SELECT 1 FROM chunks LIMIT 1");
+            return cmd.ExecuteScalar() is not null;
+        }
+    }
+
     public SavedSummary? FindSummary(string profile, string hash, string path)
     {
         lock (readGate)

@@ -14,10 +14,12 @@ internal sealed class Indexer : IDisposable
     private readonly string recipe;
     private readonly ConcurrentDictionary<string, byte> pending = new(StringComparer.Ordinal);
     private readonly Channel<byte> wake = Channel.CreateBounded<byte>(1);
+    private readonly TaskCompletionSource firstIndex = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int needsScan = 1;
     private volatile bool busy = true;
     private volatile bool initialScanComplete;
     private volatile string? error;
+    private volatile string? firstIndexError;
 
     public Indexer(Project project, IndexConfig config, Store store, Embeddings embeddings)
     {
@@ -59,6 +61,12 @@ internal sealed class Indexer : IDisposable
         return new(s.Files, s.Chunks, s.Vectors, s.Mode, s.Vec1, initialScanComplete, busy, pending.Count, error);
     }
 
+    public async Task<string?> FirstIndexAsync(CancellationToken ct)
+    {
+        await firstIndex.Task.WaitAsync(ct);
+        return firstIndexError;
+    }
+
     private void Signal(string fullPath) => Queue(project.Relative(fullPath));
 
     private void Queue(string path)
@@ -93,6 +101,7 @@ internal sealed class Indexer : IDisposable
                     {
                         await ReconcileAsync(ct);
                         initialScanComplete = true;
+                        IndexReady();
                     }
                     await ProcessEventsAsync(ct);
                     ct.ThrowIfCancellationRequested();
@@ -102,6 +111,11 @@ internal sealed class Indexer : IDisposable
                 catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
                 {
                     Report("indexing", ex);
+                    if (!firstIndex.Task.IsCompleted)
+                    {
+                        firstIndexError = error;
+                        firstIndex.TrySetResult();
+                    }
                     await Task.Delay(TimeSpan.FromSeconds(retrySeconds), ct);
                     retrySeconds = Math.Min(retrySeconds * 2, 60);
                     Scan();
@@ -244,12 +258,22 @@ internal sealed class Indexer : IDisposable
             if (current?.Hash != file.Document?.Hash)
                 Queue(file.Path);
             else
+            {
                 store.Replace(file.Path, recipe, file.Document, file.Chunks);
+                if (!initialScanComplete && file.Chunks.Length != 0)
+                    IndexReady();
+            }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             Report(file.Path, ex);
         }
+    }
+
+    private void IndexReady()
+    {
+        firstIndexError = null;
+        firstIndex.TrySetResult();
     }
 
     private void Report(string context, Exception ex)

@@ -8,11 +8,23 @@ namespace Mvec;
 
 internal static class Ipc
 {
+    internal const string Reloading = "daemon_reloading";
+
     public static async Task<Reply> CallAsync(Project project, Request request, CancellationToken ct)
     {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(TimeSpan.FromSeconds(3));
-        await using var stream = await ConnectAsync(project, timeout.Token);
+        for (var retries = 0; ; retries++)
+        {
+            var reply = await ExchangeAsync(project, request, ct);
+            // Only retry an explicit rejection before dispatch, never a lost reply.
+            if (reply.Error?.Code != Reloading || retries == 3)
+                return reply;
+            await Task.Delay(40, ct);
+        }
+    }
+
+    private static async Task<Reply> ExchangeAsync(Project project, Request request, CancellationToken ct)
+    {
+        await using var stream = await DaemonClient.ConnectAsync(project, ct);
         using var output = new StreamWriter(stream, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true };
         using var input = new StreamReader(stream, Encoding.UTF8, leaveOpen: true);
         await output.WriteLineAsync(JsonSerializer.Serialize(request, Wire.Default.Request).AsMemory(), ct);
@@ -20,34 +32,42 @@ internal static class Ipc
         return JsonSerializer.Deserialize(line, Wire.Default.Reply) ?? throw new IOException("Daemon sent an empty reply.");
     }
 
-    private static async Task<Stream> ConnectAsync(Project project, CancellationToken ct)
+    internal static async Task<Stream?> TryConnectAsync(Project project, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
+        if (OperatingSystem.IsWindows())
+        {
+            var pipe = new NamedPipeClientStream(".", project.Pipe, PipeDirection.InOut,
+                PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+            try { pipe.Connect(1); return pipe; }
+            catch (TimeoutException) { pipe.Dispose(); return null; }
+            catch { pipe.Dispose(); throw; }
+        }
+
+        var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
         try
         {
-            if (OperatingSystem.IsWindows())
-            {
-                var pipe = new NamedPipeClientStream(".", project.Pipe, PipeDirection.InOut,
-                    PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
-                try { await pipe.ConnectAsync(ct); return pipe; }
-                catch { pipe.Dispose(); throw; }
-            }
-
-            var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
-            try
-            {
-                await socket.ConnectAsync(new UnixDomainSocketEndPoint(project.Socket), ct);
-                return new NetworkStream(socket, ownsSocket: true);
-            }
-            catch { socket.Dispose(); throw; }
+            await socket.ConnectAsync(new UnixDomainSocketEndPoint(project.Socket), ct);
+            return new NetworkStream(socket, ownsSocket: true);
         }
-        catch (Exception ex) when (ex is IOException or SocketException or OperationCanceledException)
+        catch (SocketException ex) when (ex.SocketErrorCode is SocketError.AddressNotAvailable or SocketError.ConnectionRefused)
         {
-            throw new IOException($"Cannot connect to the mvec daemon for {project.Root}. Run mvec serve.", ex);
+            socket.Dispose();
+            return null;
         }
+        catch (SocketException ex)
+        {
+            socket.Dispose();
+            throw new IOException($"Cannot connect to {project.Socket}: {ex.Message}", ex);
+        }
+        catch { socket.Dispose(); throw; }
     }
 
-    public static async Task ServeAsync(Project project, Func<Request, CancellationToken, Task<Reply>> dispatch, CancellationToken ct)
+    public static async Task ServeAsync(Project project, Func<Request, CancellationToken, Task<Reply>> dispatch,
+        TimeSpan idleTimeout, CancellationToken ct, CancellationToken reload)
     {
+        using var accepting = CancellationTokenSource.CreateLinkedTokenSource(ct, reload);
+        await using var idle = new IdleDeadline(idleTimeout, accepting);
         var clients = new ConcurrentDictionary<Task, byte>();
         try
         {
@@ -56,17 +76,17 @@ internal static class Ipc
             else
                 await AcceptSocketsAsync();
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (accepting.IsCancellationRequested) { }
         finally { await Task.WhenAll(clients.Keys); }
 
         async Task AcceptPipesAsync()
         {
-            while (!ct.IsCancellationRequested)
+            while (!accepting.IsCancellationRequested)
             {
                 var pipe = new NamedPipeServerStream(project.Pipe, PipeDirection.InOut,
                     NamedPipeServerStream.MaxAllowedServerInstances, PipeTransmissionMode.Byte,
                     PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
-                try { await pipe.WaitForConnectionAsync(ct); }
+                try { await pipe.WaitForConnectionAsync(accepting.Token); }
                 catch { pipe.Dispose(); throw; }
                 Add(pipe);
             }
@@ -83,15 +103,25 @@ internal static class Ipc
                 if (!OperatingSystem.IsWindows())
                     File.SetUnixFileMode(project.Socket, UnixFileMode.UserRead | UnixFileMode.UserWrite);
                 socket.Listen(128);
-                while (!ct.IsCancellationRequested)
-                    Add(new NetworkStream(await socket.AcceptAsync(ct), ownsSocket: true));
+                while (!accepting.IsCancellationRequested)
+                    Add(new NetworkStream(await socket.AcceptAsync(accepting.Token), ownsSocket: true));
             }
+            catch (OperationCanceledException) when (accepting.IsCancellationRequested) { }
             finally { File.Delete(project.Socket); }
+
+            // Unlink before draining the backlog so clients already connected can finish.
+            while (!ct.IsCancellationRequested && socket.Poll(0, SelectMode.SelectRead))
+                Add(new NetworkStream(socket.Accept(), ownsSocket: true));
         }
 
         void Add(Stream stream)
         {
-            var handler = Task.Run(() => HandleAsync(stream, dispatch, ct), CancellationToken.None);
+            idle.Enter();
+            var handler = Task.Run(async () =>
+            {
+                try { await HandleAsync(stream, dispatch, ct); }
+                finally { idle.Leave(); }
+            });
             clients.TryAdd(handler, 0);
             _ = RemoveAsync(handler);
         }

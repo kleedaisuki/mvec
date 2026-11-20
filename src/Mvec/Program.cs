@@ -7,27 +7,52 @@ using System.Text.Json;
 
 namespace Mvec;
 
-internal static class Program
+internal static partial class Program
 {
     public static async Task<int> Main(string[] args)
     {
-        Console.InputEncoding = Encoding.UTF8;
-        Console.OutputEncoding = new UTF8Encoding(false);
+        try
+        {
+            if (args is ["__daemon", _] && !OperatingSystem.IsWindows()
+                && (OperatingSystem.IsMacOS() ? SetMacSession() : SetSession()) < 0)
+                throw new Win32Exception(Marshal.GetLastPInvokeError(), "Could not detach the mvec daemon.");
+            return await RunWithSignalsAsync(args);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(args is ["__daemon", _] ? ex.Message : $"mvec: {ex.Message}");
+            return 1;
+        }
+    }
+
+    [LibraryImport("libc", EntryPoint = "setsid", SetLastError = true)]
+    private static partial int SetSession();
+
+    [LibraryImport("libSystem.dylib", EntryPoint = "setsid", SetLastError = true)]
+    private static partial int SetMacSession();
+
+    private static async Task<int> RunWithSignalsAsync(string[] args)
+    {
         using var shutdown = new CancellationTokenSource();
-        Console.CancelKeyPress += (_, eventArgs) => { eventArgs.Cancel = true; shutdown.Cancel(); };
+        if (args is not ["__daemon", _])
+        {
+            Console.InputEncoding = Encoding.UTF8;
+            Console.OutputEncoding = new UTF8Encoding(false);
+            Console.CancelKeyPress += (_, eventArgs) => { eventArgs.Cancel = true; shutdown.Cancel(); };
+        }
         using var terminate = OperatingSystem.IsWindows() ? null : PosixSignalRegistration.Create(PosixSignal.SIGTERM,
             ctx => { ctx.Cancel = true; shutdown.Cancel(); });
 
         try
         {
+            if (args is ["__daemon", var root])
+            {
+                await Daemon.RunAsync(new Project(root), shutdown.Token, background: true);
+                return 0;
+            }
             return await RunAsync(args, shutdown.Token);
         }
         catch (OperationCanceledException) when (shutdown.IsCancellationRequested) { return 0; }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"mvec: {ex.Message}");
-            return 1;
-        }
     }
 
     private static async Task<int> RunAsync(string[] args, CancellationToken ct)
@@ -37,7 +62,7 @@ internal static class Program
             Console.WriteLine("""
                 Usage: mvec <command> [--project DIR] [options]
                   init                 Write .mvec/config.toml
-                  serve                Run the project's daemon in the foreground
+                  serve                Optional: keep the daemon running in the foreground
                   status               Show daemon and index status
                   search QUERY         Search files [--top-k N] [--mode exact|ann]
                   summary PATH         Get/generate a document summary [--cache-only]
@@ -46,6 +71,7 @@ internal static class Program
                   models               List ChatGPT model slugs for [summary].model
                   mcp                  Serve MCP over stdio, forwarding to the daemon
                 Without --project, use the nearest configured parent project.
+                Commands that use the index start its background daemon as needed.
                 """);
             return 0;
         }

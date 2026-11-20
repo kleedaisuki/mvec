@@ -16,31 +16,35 @@ On Unix, restore the executable bit if your archive extractor drops it
 ```sh
 cd /path/to/project
 mvec init
-# Export OPENROUTER_API_KEY in the environment that starts the daemon.
-mvec serve
-```
-
-From another terminal (either inside the project or using `--project DIR`):
-
-```sh
-mvec status
+# Set OPENROUTER_API_KEY in your shell before running index commands.
 mvec search "Where is native IR lowering implemented?" --top-k 10
-mvec summary docs/design.md --cache-only
+mvec status
 ```
 
-Run `serve` under your existing service manager, or in a terminal and stop it
-with Ctrl+C. A restart reopens the committed index and reconciles offline
-changes. Use local storage: SQLite WAL uses shared memory and is not designed
-for clients sharing the database over a network filesystem. Only the daemon
-opens the database.
+Run commands from the project (or anywhere with `--project DIR`). The first
+search, status or summary request launches the project's daemon if needed.
+On a new index, search waits for the first searchable data; results may still
+be partial until `mvec status` reports `initial_scan_complete`. The daemon
+exits after 15 minutes without client activity by default. It reopens the
+committed index and reconciles offline changes on the next request.
+
+The background process inherits the environment of the command that starts
+it. Set embedding credentials in the shell or MCP client's environment
+before the first index command. Diagnostics from the latest background run
+are in `.mvec/daemon.log`. For continuous indexing or foreground diagnostics,
+you can still run `mvec serve` explicitly. Use local storage: only the daemon
+opens the SQLite database, which uses WAL shared memory.
 
 ## Configuration
 
 `mvec init` creates `.mvec/config.toml` without replacing existing settings.
-Restart the daemon after editing it. Keep `.mvec/` out of version control.
+The next index command picks up edits automatically in background mode.
+If you run `mvec serve` explicitly, restart it to apply edits. Keep `.mvec/`
+out of version control.
 
 | Section | Setting | Meaning |
 | --- | --- | --- |
+| `daemon` | `idle_seconds` | Optional background idle timeout, 900 seconds by default. An active request is allowed to finish. |
 | `embedding` | `provider`, `model`, `dimensions` | Provider, document embedding model and output dimensions. The default is OpenRouter with `mongodb/voyage-code-4` (1024 dimensions). |
 | | `query_model` | Optional, defaults to the document model. Distinct models are accepted only within the compatible general-purpose Voyage 4 family, at the same dimension. |
 | | `route`, `key_env` | OpenRouter upstream slug (pinned). Secrets come from `OPENROUTER_API_KEY` or `VOYAGE_API_KEY`; override the variable name with `key_env`. |
@@ -89,7 +93,7 @@ mvec models
 ```
 
 The browser asks you to grant mvec permission to use your ChatGPT plan. Set
-the chosen model slug in `.mvec/config.toml` and restart the daemon:
+the chosen model slug in `.mvec/config.toml`:
 
 ```toml
 [summary]
@@ -124,9 +128,10 @@ edits can eventually trigger regeneration. Results report both the current
 
 ## Clients
 
-Use `mvec mcp --project /path/to/project` as an MCP stdio server command, with
-the daemon already running. It exposes `mvec_search`, `mvec_summary` and
-`mvec_status`. See the [IPC contract](docs/ipc.md) for SDKs and direct clients.
+Use `mvec mcp --project /path/to/project` as an MCP stdio server command.
+It exposes `mvec_search`, `mvec_summary` and `mvec_status`. Tool calls start
+the daemon as needed; a parked MCP connection does not keep it alive. See the
+[IPC contract](docs/ipc.md) for SDKs and direct clients.
 
 ## Build and run the journey
 

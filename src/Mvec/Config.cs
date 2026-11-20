@@ -8,6 +8,7 @@ namespace Mvec;
 
 internal sealed class Config
 {
+    [TomlPropertyName("daemon")] public DaemonConfig Daemon { get; set; } = new();
     [TomlPropertyName("embedding")] public EmbeddingConfig Embedding { get; set; } = new();
     [TomlPropertyName("search")] public SearchConfig Search { get; set; } = new();
     [TomlPropertyName("index")] public IndexConfig Index { get; set; } = new();
@@ -39,6 +40,8 @@ internal sealed class Config
         if (string.IsNullOrWhiteSpace(config.Summary.Model) || config.Summary.MaxChars is < 128 or > 1_000_000
             || !(config.Summary.ChangeThreshold >= 0 && config.Summary.ChangeThreshold <= 1))
             throw new InvalidDataException("Invalid [summary] model, max_chars or change_threshold.");
+        if (config.Daemon.IdleSeconds is < 1 or > 86400)
+            throw new InvalidDataException("[daemon].idle_seconds must be between 1 and 86400.");
         return config;
     }
 
@@ -68,6 +71,11 @@ internal sealed class Config
         change_threshold = 0.15
         max_chars = 80000
         """;
+}
+
+internal sealed class DaemonConfig
+{
+    [TomlPropertyName("idle_seconds")] public int IdleSeconds { get; set; } = 15 * 60;
 }
 
 internal sealed class EmbeddingConfig
@@ -145,6 +153,7 @@ internal sealed class Project
     public string State => Path.Join(Root, ".mvec");
     public string ConfigPath => Path.Join(State, "config.toml");
     public string Socket => Path.Join(State, "mvec.sock");
+    public string DaemonLog => Path.Join(State, "daemon.log");
     public string Pipe => "mvec-" + Hash.OfText(Root.ToUpperInvariant());
 
     public Project(string root)

@@ -43,13 +43,71 @@ internal sealed class Journey(string executable, string scratch)
         chat.ListenAt(address);
         try
         {
+            await ActivationAsync(Path.Join(working, "auto"));
             await ExactAsync(Path.Join(working, "exact"));
             await ApproximateAsync(Path.Join(working, "ann"));
             await SummaryAsync(Path.Join(working, "oauth"), chat);
             Check(routerCalls > 0 && voyageCalls > 0 && largestBatch > 1, "both provider adapters and batching exercised");
-            Console.WriteLine("mvec journey passed: exact and ANN, concurrent snapshots, deduplication, rename/delete, restart, isolation, summaries and MCP");
+            Console.WriteLine("mvec journey passed: auto-start, idle retirement, exact and ANN, concurrent snapshots, deduplication, rename/delete, restart, isolation, summaries and MCP");
         }
         finally { Directory.Delete(working, recursive: true); }
+    }
+
+    private async Task ActivationAsync(string root)
+    {
+        const string coldText = "AUTOCOLD The compiler generates native instructions.";
+        await InitAsync(root, "openrouter", "exact");
+        var project = new Project(root);
+        File.AppendAllText(project.ConfigPath, "\n\n[daemon]\nidle_seconds = 2\n");
+        Write(root, "lowering.md", coldText);
+        var nested = Path.Join(root, "src");
+        Directory.CreateDirectory(nested);
+        await using (var firstBatch = Hold("AUTOCOLD"))
+        {
+            var firstSearch = SearchAsync(nested, coldText, 1);
+            var concurrent = Task.WhenAll(Enumerable.Range(0, 4).Select(_ => CallAsync(root, true, "status")));
+            await firstBatch.Arrived.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await concurrent;
+            // The first request remains active beyond the idle timeout.
+            await Task.Delay(TimeSpan.FromSeconds(3));
+            Check(!firstSearch.IsCompleted, "first search waits for searchable data");
+            using (var owner = DaemonLock.TryAcquire(project))
+                Check(owner is null, "an in-flight search keeps the daemon alive");
+            firstBatch.Release();
+            Check(ChunkAt(await firstSearch, "lowering.md") == coldText && indexed[coldText] == 1,
+                "concurrent cold clients share one index, including project discovery from a subdirectory");
+        }
+
+        await WaitForIdleExitAsync(project);
+        Write(root, "offline.md", "A document added while the daemon was stopped.");
+        await TestMcpAsync(root);
+        await WaitPathsAsync(root, "MCP activation reconciles offline changes", "lowering.md", "offline.md");
+
+        var config = File.ReadAllText(project.ConfigPath);
+        File.WriteAllText(project.ConfigPath, config.Replace("enabled = true", "enabled = false", StringComparison.Ordinal));
+        var disabled = await RunAsync(root, "summary", "lowering.md");
+        Check(disabled.Exit == 1 && Text(Parse(disabled.Out).GetProperty("error"), "message")
+            .StartsWith("Enable [summary]", StringComparison.Ordinal), "the next command picks up configuration changes");
+        await WaitForIdleExitAsync(project);
+        Check(indexed[coldText] == 1, "reopening the index does not re-embed unchanged documents");
+
+        File.AppendAllText(project.ConfigPath, "\ninvalid = [\n");
+        var failure = await RunAsync(root, "status");
+        Check(failure.Exit != 0 && failure.Err.Length != 0
+            && !failure.Err.Contains("Timed out", StringComparison.Ordinal), "startup configuration errors reach the client");
+    }
+
+    private static async Task WaitForIdleExitAsync(Project project)
+    {
+        var elapsed = Stopwatch.StartNew();
+        do
+        {
+            using (var owner = DaemonLock.TryAcquire(project))
+                if (owner is not null)
+                    return;
+            await Task.Delay(100);
+        } while (elapsed.Elapsed < TimeSpan.FromSeconds(10));
+        throw new TimeoutException("The background daemon did not release the index lock when idle.");
     }
 
     private async Task ExactAsync(string project)
@@ -62,7 +120,7 @@ internal sealed class Journey(string executable, string scratch)
         Write(project, "secrets.env", "Not part of the semantic index");
         File.WriteAllBytes(Path.Join(project, "binary.dat"), [0, 1, 2]);
         JsonElement stable;
-        await using (var daemon = StartDaemon(project))
+        await using (var daemon = await StartDaemonAsync(project))
         {
             stable = await WaitAsync(project, "initial exact index",
                 s => Complete(s) && Count(s, "files") == 3 && Count(s, "chunks") == 4);
@@ -114,7 +172,7 @@ internal sealed class Journey(string executable, string scratch)
         File.Delete(Path.Join(project, "docs.txt"));
         Write(project, "offline.md", Offline);
         await using var hold = Hold("OFFLINE");
-        await using var reopened = StartDaemon(project);
+        await using var reopened = await StartDaemonAsync(project);
         await hold.Arrived.Task.WaitAsync(TimeSpan.FromSeconds(25));
         var previous = await SearchAsync(project, V3, 2);
         Check(ChunkAt(previous, "moved/lower.md") == V3, "durable snapshot usable during restart reconciliation");
@@ -161,7 +219,7 @@ internal sealed class Journey(string executable, string scratch)
             }
             finally { await stop.CancelAsync(); await daemon; }
         }
-        await using var restarted = StartDaemon(projectPath);
+        await using var restarted = await StartDaemonAsync(projectPath);
         await WaitAsync(projectPath, "summary cache restart", Complete);
         var restart = await CallAsync(projectPath, true, "summary", "summary.txt");
         Check(Text(restart, "cache") == "exact" && fixture.Summaries == 3, "summary stays cached after restart and logout");
@@ -172,7 +230,7 @@ internal sealed class Journey(string executable, string scratch)
         await InitAsync(project, "voyage", "ann");
         for (var i = 0; i < 48; i++)
             Write(project, $"doc-{i:00}.md", $"Cluster-{i % 8} synthetic vector group; document {i:00}.");
-        await using (var daemon = StartDaemon(project))
+        await using (var daemon = await StartDaemonAsync(project))
         {
             await WaitAsync(project, "ANN trained", s => Complete(s) && Text(s, "mode") == "ann" && Count(s, "files") == 48);
             var ann = await SearchAsync(project, "Cluster-4", 1);
@@ -187,7 +245,7 @@ internal sealed class Journey(string executable, string scratch)
             var updated = await SearchAsync(project, "Cluster-7 addition to the trained index.", 8);
             Check(Hits(updated).Any(h => Text(h, "path") == "added.md"), "ANN includes incremental insert");
         }
-        await using var restart = StartDaemon(project);
+        await using var restart = await StartDaemonAsync(project);
         var persisted = await WaitAsync(project, "persisted ANN", s => Complete(s) && Count(s, "vectors") == 48);
         Check(Text(persisted, "mode") == "ann", "ANN model survives restart");
     }
@@ -333,7 +391,31 @@ internal sealed class Journey(string executable, string scratch)
         Check(child.ExitCode == 0, "MCP exits on stdin EOF");
     }
 
-    private DaemonProcess StartDaemon(string project) => new(Start(project, "serve"));
+    private async Task<DaemonProcess> StartDaemonAsync(string root)
+    {
+        var process = Start(root, "serve");
+        var daemon = new DaemonProcess(process);
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            var project = new Project(root);
+            while (!process.HasExited)
+            {
+                if (await Ipc.TryConnectAsync(project, timeout.Token) is { } stream)
+                {
+                    await stream.DisposeAsync();
+                    return daemon;
+                }
+                await Task.Delay(40, timeout.Token);
+            }
+            throw new InvalidOperationException($"The foreground daemon exited with code {process.ExitCode}.");
+        }
+        catch
+        {
+            await daemon.DisposeAsync();
+            throw;
+        }
+    }
 
     private async Task<JsonElement> SearchAsync(string project, string text, int k, string? mode = null)
     {

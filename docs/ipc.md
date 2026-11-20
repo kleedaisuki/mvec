@@ -13,6 +13,11 @@ Use a local project root. Keep Unix socket paths below the operating system's
 address length limit (104 bytes including the NUL on macOS). Commands without
 `--project` discover the nearest parent with `.mvec/config.toml`.
 
+The CLI and MCP adapter activate the background daemon on demand. Clients
+that use IPC directly and need a permanently available endpoint can still
+run `mvec serve`. A background endpoint can disappear after idle retirement
+or reject a request with `daemon_reloading` before dispatch on a config edit.
+
 Each connection carries one UTF-8 JSON request terminated by a newline and one
 UTF-8 JSON reply terminated by a newline. Open separate connections for concurrent
 requests. Requests do not include a project ID; the endpoint selects the project.

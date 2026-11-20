@@ -16,6 +16,21 @@ clients -> summary request -> versioned SQLite cache -> Responses API only on mi
   project-relative paths, not inferred mutations. A single maintenance worker
   reads their current contents; startup, watcher overflow and the timer reconcile
   against the filesystem. Directory events expand to their descendants.
+- CLI and MCP try the existing local endpoint first. On a miss, a separate
+  launch lock coalesces concurrent starts without transferring index ownership
+  to the client. The client starts the same binary with private stdio and, on
+  Unix, a [separate session](https://man7.org/linux/man-pages/man2/setsid.2.html).
+  The daemon does not depend on the requesting terminal, a host service
+  manager, or the lifetime of an MCP adapter.
+- A background daemon retires after 900 seconds between requests by default.
+  In-flight requests keep it alive; watcher and reconciliation activity do
+  not. Retirement closes the listener, drains accepted clients, and then
+  cancels the index worker while still holding the index lock. On an observed
+  config edit the old daemon rejects new work before dispatch, so the client
+  can safely reconnect and retry without replaying a provider call. A cold
+  search on an empty index waits for the first searchable commit or scan
+  result; a resumed daemon can serve its existing committed snapshot during
+  reconciliation.
 - The file hash covers original bytes. Chunk hashes cover the decoded text
   actually sent to the provider. The chunk recipe is part of the per-file
   index identity and does not change the embedding cache's identity. Recheck
