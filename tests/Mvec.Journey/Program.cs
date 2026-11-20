@@ -64,10 +64,22 @@ internal sealed class Journey(string executable, string scratch)
         Directory.CreateDirectory(nested);
         await using (var firstBatch = Hold("AUTOCOLD"))
         {
-            var concurrent = Task.WhenAll(Enumerable.Range(0, 4).Select(_ => CallAsync(root, true, "status")));
-            await firstBatch.Arrived.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            var concurrent = Task.WhenAll(Enumerable.Range(0, 4).Select(_ => RunAsync(root, "status")));
+            try { await firstBatch.Arrived.Task.WaitAsync(TimeSpan.FromSeconds(10)); }
+            catch (TimeoutException)
+            {
+                foreach (var status in await concurrent)
+                    Console.Error.WriteLine($"cold status exited {status.Exit}: {status.Out}{status.Err}");
+                if (File.Exists(project.DaemonLog))
+                {
+                    using var log = new StreamReader(new FileStream(project.DaemonLog, FileMode.Open, FileAccess.Read, FileShare.ReadWrite));
+                    Console.Error.WriteLine(await log.ReadToEndAsync());
+                }
+                throw;
+            }
             var firstSearch = SearchAsync(nested, coldText, 1);
-            await concurrent;
+            foreach (var status in await concurrent)
+                Check(status.Exit == 0, $"cold status exited {status.Exit}: {status.Out}{status.Err}");
             // The first request remains active beyond the idle timeout.
             await Task.Delay(TimeSpan.FromSeconds(3));
             Check(!firstSearch.IsCompleted, "first search waits for searchable data");
