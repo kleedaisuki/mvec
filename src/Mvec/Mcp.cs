@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 
@@ -15,7 +16,7 @@ internal static class Mcp
         ]}
         """;
 
-    public static async Task RunAsync(Project project, CancellationToken ct)
+    public static async Task RunAsync(Project project, bool compact, CancellationToken ct)
     {
         while (await Console.In.ReadLineAsync(ct) is { } line)
         {
@@ -44,7 +45,7 @@ internal static class Mcp
                         "initialize" => Initialize(parameters),
                         "ping" => "{}",
                         "tools/list" => Tools,
-                        "tools/call" => await CallAsync(project, parameters, ct),
+                        "tools/call" => await CallAsync(project, parameters, compact, ct),
                         _ => null
                     };
                     if (result is null)
@@ -67,7 +68,7 @@ internal static class Mcp
         return $$$"""{"protocolVersion":"{{{selected}}}","capabilities":{"tools":{}},"serverInfo":{"name":"mvec","version":"0.1.0"}}""";
     }
 
-    private static async Task<string> CallAsync(Project project, JsonElement parameters, CancellationToken ct)
+    private static async Task<string> CallAsync(Project project, JsonElement parameters, bool compact, CancellationToken ct)
     {
         var name = parameters.GetProperty("name").GetString();
         TryProperty(parameters, "arguments", out var args);
@@ -85,7 +86,7 @@ internal static class Mcp
         Reply response;
         try { response = await Ipc.CallAsync(project, request, ct); }
         catch (IOException ex) { response = Reply.Fail("daemon_unavailable", ex.Message); }
-        var text = response.Ok ? response.Result!.Value.GetRawText() : $"{response.Error!.Code}: {response.Error.Message}";
+        var text = FormatContent(method, response, compact);
         return MakeJson(writer =>
         {
             writer.WriteStartObject();
@@ -99,6 +100,17 @@ internal static class Mcp
             writer.WriteEndArray();
             writer.WriteEndObject();
         });
+    }
+
+    private static string FormatContent(string method, Reply response, bool compact)
+    {
+        if (!response.Ok)
+            return $"{response.Error!.Code}: {response.Error.Message}";
+        if (!compact)
+            return response.Result!.Value.GetRawText();
+        using var content = new StringWriter(CultureInfo.InvariantCulture) { NewLine = "\n" };
+        new Output(content, compact: true, color: false).Write(method, response);
+        return content.ToString().TrimEnd('\n');
     }
 
     private static Request WithMethod(this Request request, string method) => request with { Method = method };

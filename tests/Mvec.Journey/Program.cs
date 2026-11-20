@@ -143,6 +143,7 @@ internal sealed class Journey(string executable, string scratch)
             var located = Hits(await SearchAsync(project, Summary, 3)).Single(h => Text(h, "path") == "docs.txt");
             Check(Text(located, "chunk") == Summary && Count(located, "start_line") == 2
                 && Count(located, "start_offset") == 128, "result offsets and lines refer to original content");
+            await OutputAsync(project);
 
             await CallAsync(project, false, "serve");
             await using (var a = Hold("V2GATE"))
@@ -179,6 +180,7 @@ internal sealed class Journey(string executable, string scratch)
             Check(denial.Exit == 1 && Text(Parse(denial.Out).GetProperty("error"), "code") == "chatgpt_sign_in_required",
                 "the published daemon reports a missing OAuth session without spawning a program");
             await TestMcpAsync(project);
+            await TestMcpAsync(project, compact: true);
         }
 
         File.Delete(Path.Join(project, "docs.txt"));
@@ -388,16 +390,47 @@ internal sealed class Journey(string executable, string scratch)
         throw new InvalidOperationException($"Timed out waiting for {label}: {last}");
     }
 
-    private async Task TestMcpAsync(string project)
+    private async Task OutputAsync(string project)
     {
-        using var child = Start(project, "mcp");
+        string[] search = ["search", Initial, "--top-k", "1"];
+        var json = await RunAsync(project, search);
+        var hit = Hits(Parse(json.Out).GetProperty("result")).Single();
+        var path = Text(hit, "path");
+        var location = path + ":1";
+
+        var terse = await RunAsync(project, [..search, "--format", "compact"]);
+        Check(terse.Exit == 0 && terse.Out.TrimEnd() == location, "compact search emits just one file location");
+        var text = await RunAsync(project, [..search, "--format", "text"]);
+        Check(text.Exit == 0 && text.Out.Contains("1 file · exact", StringComparison.Ordinal)
+            && text.Out.Contains($"1. {location}", StringComparison.Ordinal)
+            && text.Out.Contains(Initial, StringComparison.Ordinal) && !text.Out.Contains('\u001b'),
+            "redirected text shows rank, location and preview without ANSI escapes");
+        var colored = await RunAsync(project, [..search, "--format", "text", "--color", "always"]);
+        Check(colored.Exit == 0 && colored.Out.Contains($"\u001b[1;36m{location}\u001b[0m", StringComparison.Ordinal),
+            "color marks the location, not the entire response");
+
+        var status = await RunAsync(project, "status", "--format", "text");
+        var summary = await RunAsync(project, "summary", "docs.txt", "--cache-only", "--format", "text");
+        Check(status.Exit == 0 && status.Out.Contains("Index · ready · exact", StringComparison.Ordinal)
+            && summary.Exit == 0 && summary.Out.Contains("No cached summary.", StringComparison.Ordinal),
+            "status and cached summary are readable outside JSON");
+    }
+
+    private async Task TestMcpAsync(string project, bool compact = false)
+    {
+        using var child = Start(project, compact ? ["mcp", "--format", "compact"] : ["mcp"]);
         await child.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}""");
         Check(Text(Parse((await child.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(10)))!)
             .GetProperty("result"), "protocolVersion") == "2025-11-25", "MCP handshake");
         await child.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","method":"notifications/initialized"}""");
         await child.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"mvec_search","arguments":{"query":"native lowering","top_k":1}}}""");
         var result = Parse((await child.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(10)))!).GetProperty("result");
-        Check(Hits(Parse(Text(result.GetProperty("content")[0], "text"))).Length == 1, "MCP forwards search to daemon");
+        var content = Text(result.GetProperty("content")[0], "text");
+        if (compact)
+            Check(content.Contains(':') && !content.StartsWith('{') && !content.Contains('\n') && !content.Contains('\u001b'),
+                "compact MCP is a plain, one-location result");
+        else
+            Check(Hits(Parse(content)).Length == 1, "default MCP returns JSON search results");
         child.StandardInput.Close();
         await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
         Check(child.ExitCode == 0, "MCP exits on stdin EOF");

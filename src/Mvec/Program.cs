@@ -3,7 +3,6 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
-using System.Text.Json;
 
 namespace Mvec;
 
@@ -72,6 +71,9 @@ internal static partial class Program
                   mcp                  Serve MCP over stdio, forwarding to the daemon
                 Without --project, use the nearest configured parent project.
                 Commands that use the index start its background daemon as needed.
+                search/status/summary: --format text|compact|json, --color auto|never|always.
+                Terminal output is text; redirected output stays JSON by default.
+                mcp: --format compact|json (default json), for tool results only.
                 """);
             return 0;
         }
@@ -81,6 +83,8 @@ internal static partial class Program
         string? root = null;
         string? mode = null;
         int? k = null;
+        var format = OutputFormat.Auto;
+        var color = ColorMode.Auto;
         var cacheOnly = false;
         var noBrowser = false;
         var port = 0;
@@ -100,6 +104,14 @@ internal static partial class Program
                 case "--top-k" when command == "search": k = int.Parse(Value(), CultureInfo.InvariantCulture); break;
                 case "--mode" when command == "search": mode = Value(); break;
                 case "--cache-only" when command == "summary": cacheOnly = true; break;
+                case "--format" when command is "search" or "status" or "summary" or "mcp":
+                    format = Output.ParseFormat(Value());
+                    if (command == "mcp" && format == OutputFormat.Text)
+                        throw new ArgumentException("mvec mcp expects --format compact or json.");
+                    break;
+                case "--color" when command is "search" or "status" or "summary":
+                    color = Output.ParseColor(Value());
+                    break;
                 case "--no-browser" when command == "login": noBrowser = true; break;
                 case "--port" when command == "login": port = int.Parse(Value(), CultureInfo.InvariantCulture); break;
                 default: throw new ArgumentException($"Unknown option for {command}: {arg}");
@@ -131,7 +143,7 @@ internal static partial class Program
             case "models":
                 return await RunAccountAsync(project, command, noBrowser, port, ct);
             case "mcp":
-                await Mcp.RunAsync(project, ct);
+                await Mcp.RunAsync(project, format == OutputFormat.Compact, ct);
                 return 0;
             case "status":
             case "search":
@@ -139,7 +151,7 @@ internal static partial class Program
                 var request = new Request(command, command == "search" ? positional[0] : null, k, mode,
                     command == "summary" ? positional[0] : null, cacheOnly);
                 var response = await Ipc.CallAsync(project, request, ct);
-                Console.WriteLine(JsonSerializer.Serialize(response, Wire.Default.Reply));
+                Output.WriteCli(command, response, format, color);
                 return response.Ok ? 0 : 1;
             default:
                 throw new ArgumentException($"Unknown command: {command}");

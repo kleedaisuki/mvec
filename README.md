@@ -35,6 +35,17 @@ are in `.mvec/daemon.log`. For continuous indexing or foreground diagnostics,
 you can still run `mvec serve` explicitly. Use local storage: only the daemon
 opens the SQLite database, which uses WAL shared memory.
 
+### Output formats
+
+Interactive `search` shows ranked, highlighted file locations and short
+previews. Redirected output keeps the same full JSON by default, so existing
+scripts work unchanged. Use `--format json` to request it explicitly,
+`--format text` to capture the human-readable view, or `--format compact`
+to get only ranked `path:line[-line]` locations for navigation. Text output
+honors [`NO_COLOR`](https://no-color.org/) and supports
+`--color auto|never|always` on the CLI. No color codes are added to compact
+or JSON output.
+
 ## Configuration
 
 `mvec init` creates `.mvec/config.toml` without replacing existing settings.
@@ -132,6 +143,8 @@ Use `mvec mcp --project /path/to/project` as an MCP stdio server command.
 It exposes `mvec_search`, `mvec_summary` and `mvec_status`. Tool calls start
 the daemon as needed; a parked MCP connection does not keep it alive. See the
 [IPC contract](docs/ipc.md) for SDKs and direct clients.
+Add `--format compact` to the MCP server arguments to use plain-text tool
+results (locations only for search) instead of the default JSON result body.
 
 ## Build and run the journey
 
