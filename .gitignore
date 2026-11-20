@@ -1,0 +1,7 @@
+bin/
+obj/
+.temp/
+.mvec/
+.env
+.env.*
+*.env

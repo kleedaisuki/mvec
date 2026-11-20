@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>mvec</AssemblyName>
+    <PublishAot>true</PublishAot>
+    <VecRoot>$(MSBuildThisFileDirectory)../../native/vec1</VecRoot>
+    <VecBuild>$(MSBuildThisFileDirectory)obj/vec1</VecBuild>
+    <VecBinary>vec1.so</VecBinary>
+    <VecBinary Condition="$([MSBuild]::IsOSPlatform('OSX'))">vec1.dylib</VecBinary>
+    <VecBinary Condition="$([MSBuild]::IsOSPlatform('Windows'))">vec1.dll</VecBinary>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Mvec.Journey" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.14" />
+    <PackageReference Include="Tomlyn" Version="2.10.1" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.14" />
+    <Content Include="$(VecBuild)/install/$(VecBinary)" Link="$(VecBinary)"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <VecSource Include="$(VecRoot)/*" />
+  </ItemGroup>
+  <Target Name="BuildVec1" BeforeTargets="PrepareForBuild" Inputs="@(VecSource)" Outputs="$(VecBuild)/install/$(VecBinary)">
+    <Exec Command="cmake -S &quot;$(VecRoot)&quot; -B &quot;$(VecBuild)&quot; -DCMAKE_BUILD_TYPE=Release" />
+    <Exec Command="cmake --build &quot;$(VecBuild)&quot; --config Release" />
+    <Exec Command="cmake --install &quot;$(VecBuild)&quot; --config Release --prefix &quot;$(VecBuild)/install&quot;" />
+  </Target>
+</Project>

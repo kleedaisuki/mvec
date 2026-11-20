@@ -1,0 +1,39 @@
+name: Native AOT journey
+
+on: [push, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  journey:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            binary: mvec
+          - runner: windows-2025
+            binary: mvec.exe
+          - runner: macos-15
+            binary: mvec
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+      - name: Publish native executable and Vec1
+        run: dotnet publish src/Mvec/Mvec.csproj -c Release -o .temp/publish
+      - name: Run daemon and client journey
+        shell: pwsh
+        run: |
+          $exe = Join-Path $PWD ".temp/publish/${{ matrix.binary }}"
+          $scratch = Join-Path $PWD ".temp/j"
+          dotnet run --project tests/Mvec.Journey -c Release -- "$exe" "$scratch"
+      - name: Preserve native distribution
+        uses: actions/upload-artifact@v6
+        with:
+          name: mvec-${{ matrix.runner }}-${{ runner.arch }}
+          path: .temp/publish/
+          include-hidden-files: true
