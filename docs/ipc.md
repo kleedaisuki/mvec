@@ -86,8 +86,9 @@ MCP uses newline-delimited JSON-RPC stdio with the `2025-11-25` initialize
 handshake and accepts the earlier wire-compatible revisions. Tool calls forward
 to the same local endpoint as the CLI.
 
-Presentation is client-side. Interactive CLI output is formatted; redirected
-CLI output and default MCP tool content retain their JSON shapes.
+Presentation is client-side. Interactive CLI search shows locations by
+default; redirected CLI output and default MCP tool content retain their
+JSON shapes.
 `mvec mcp --format compact` returns plain text inside the same MCP content
 envelope. Compact search preserves rank order and inclusive source lines, but
 omits scores, previews and byte/character offsets. Use JSON for automation

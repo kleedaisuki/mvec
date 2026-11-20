@@ -37,14 +37,12 @@ opens the SQLite database, which uses WAL shared memory.
 
 ### Output formats
 
-Interactive `search` shows ranked, highlighted file locations and short
-previews. Redirected output keeps the same full JSON by default, so existing
-scripts work unchanged. Use `--format json` to request it explicitly,
-`--format text` to capture the human-readable view, or `--format compact`
-to get only ranked `path:line[-line]` locations for navigation. Text output
-honors [`NO_COLOR`](https://no-color.org/) and supports
-`--color auto|never|always` on the CLI. No color codes are added to compact
-or JSON output.
+Interactive `search` defaults to ranked, highlighted `path:line[-line]`
+locations. Add `--format text` for scores and short previews. Redirected
+output still defaults to full JSON, so existing scripts work unchanged.
+Use `--format json` to request that format explicitly or `--format compact`
+for plain, uncolored locations. Terminal styling honors
+[`NO_COLOR`](https://no-color.org/) and `--color auto|never|always`.
 
 ## Configuration
 

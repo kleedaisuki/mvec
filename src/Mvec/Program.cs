@@ -72,7 +72,8 @@ internal static partial class Program
                 Without --project, use the nearest configured parent project.
                 Commands that use the index start its background daemon as needed.
                 search/status/summary: --format text|compact|json, --color auto|never|always.
-                Terminal output is text; redirected output stays JSON by default.
+                In a terminal, search shows locations only; --format text adds previews.
+                Redirected output stays JSON by default.
                 mcp: --format compact|json (default json), for tool results only.
                 """);
             return 0;
