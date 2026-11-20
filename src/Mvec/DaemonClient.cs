@@ -1,9 +1,10 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 
 namespace Mvec;
 
-internal static class DaemonClient
+internal static partial class DaemonClient
 {
     public static async Task<Stream> ConnectAsync(Project project, CancellationToken ct)
     {
@@ -62,6 +63,8 @@ internal static class DaemonClient
 
     private static Process Start(Project project)
     {
+        if (OperatingSystem.IsWindows())
+            IsolateWindowsStdio();
         var info = new ProcessStartInfo(Environment.ProcessPath!)
         {
             WorkingDirectory = project.Root,
@@ -78,6 +81,32 @@ internal static class DaemonClient
         try { return Process.Start(info) ?? throw new IOException("Could not launch the mvec daemon."); }
         catch (Win32Exception ex) { throw new IOException($"Could not start the mvec daemon: {ex.Message}", ex); }
     }
+
+    private static void IsolateWindowsStdio()
+    {
+        const uint inherit = 1;
+        const int standardInput = -10, standardError = -12;
+        // .NET 10 CreateProcess inherits existing handles even with all three
+        // streams redirected. Keeping the caller's pipes open delays their EOF.
+        for (var stream = standardInput; stream >= standardError; stream--)
+        {
+            var handle = GetStdHandle(stream);
+            if (GetHandleInformation(handle, out var flags) == 0 || (flags & inherit) == 0
+                || SetHandleInformation(handle, inherit, 0) != 0)
+                continue;
+            var error = new Win32Exception(Marshal.GetLastPInvokeError());
+            throw new IOException($"Could not isolate daemon streams: {error.Message}", error);
+        }
+    }
+
+    [LibraryImport("kernel32.dll")]
+    private static partial nint GetStdHandle(int stream);
+
+    [LibraryImport("kernel32.dll")]
+    private static partial int GetHandleInformation(nint handle, out uint flags);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    private static partial int SetHandleInformation(nint handle, uint mask, uint flags);
 }
 
 internal static class DaemonLock

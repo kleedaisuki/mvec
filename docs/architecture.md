@@ -21,7 +21,9 @@ clients -> summary request -> versioned SQLite cache -> Responses API only on mi
   to the client. The client starts the same binary with private stdio and, on
   Unix, a [separate session](https://man7.org/linux/man-pages/man2/setsid.2.html).
   The daemon does not depend on the requesting terminal, a host service
-  manager, or the lifetime of an MCP adapter.
+  manager, or the lifetime of an MCP adapter. On Windows, clear inheritance
+  on the caller's stdio handles explicitly: [.NET 10 enables handle
+  inheritance even when it redirects all three child streams](https://github.com/dotnet/runtime/blob/v10.0.0/src/libraries/System.Diagnostics.Process/src/System/Diagnostics/Process.Windows.cs#L536-L546).
 - A background daemon retires after 900 seconds between requests by default.
   In-flight requests keep it alive; watcher and reconciliation activity do
   not. Retirement closes the listener, drains accepted clients, and then

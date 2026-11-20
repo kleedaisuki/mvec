@@ -64,9 +64,9 @@ internal sealed class Journey(string executable, string scratch)
         Directory.CreateDirectory(nested);
         await using (var firstBatch = Hold("AUTOCOLD"))
         {
-            var firstSearch = SearchAsync(nested, coldText, 1);
             var concurrent = Task.WhenAll(Enumerable.Range(0, 4).Select(_ => CallAsync(root, true, "status")));
             await firstBatch.Arrived.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            var firstSearch = SearchAsync(nested, coldText, 1);
             await concurrent;
             // The first request remains active beyond the idle timeout.
             await Task.Delay(TimeSpan.FromSeconds(3));
@@ -442,7 +442,15 @@ internal sealed class Journey(string executable, string scratch)
             await child.WaitForExitAsync();
             throw new TimeoutException($"mvec {string.Join(' ', args)} did not exit.");
         }
-        return (child.ExitCode, await output, await errors);
+        try
+        {
+            var streams = await Task.WhenAll(output, errors).WaitAsync(TimeSpan.FromSeconds(15));
+            return (child.ExitCode, streams[0], streams[1]);
+        }
+        catch (TimeoutException ex)
+        {
+            throw new TimeoutException($"mvec {string.Join(' ', args)} exited, but its output pipes stayed open.", ex);
+        }
     }
 
     private Process Start(string project, params string[] args)
