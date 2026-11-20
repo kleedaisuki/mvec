@@ -8,7 +8,7 @@ namespace Mvec;
 internal enum OutputFormat { Auto, Text, Compact, Json }
 internal enum ColorMode { Auto, Always, Never }
 
-internal sealed partial class Output(TextWriter writer, bool compact, bool color)
+internal sealed partial class Output(TextWriter writer, bool compact, bool color, bool scoreInCompact = false)
 {
     public static OutputFormat ParseFormat(string value) => value switch
     {
@@ -38,8 +38,9 @@ internal sealed partial class Output(TextWriter writer, bool compact, bool color
         var writer = reply.Ok ? Console.Out : Console.Error;
         redirected = reply.Ok ? redirected : Console.IsErrorRedirected;
         var color = format != OutputFormat.Compact && CanColor(colors, redirected, reply.Ok);
-        var compact = format == OutputFormat.Compact || (format == OutputFormat.Auto && method == "search");
-        new Output(writer, compact, color).Write(method, reply);
+        var terminalSearch = format == OutputFormat.Auto && method == "search";
+        var compact = format == OutputFormat.Compact || terminalSearch;
+        new Output(writer, compact, color, scoreInCompact: terminalSearch).Write(method, reply);
     }
 
     public void Write(string method, Reply reply)
@@ -77,14 +78,16 @@ internal sealed partial class Output(TextWriter writer, bool compact, bool color
             var location = FormattableString.Invariant($"{Clean(hit.Path)}:{hit.StartLine}");
             if (hit.EndLine != hit.StartLine)
                 location += FormattableString.Invariant($"-{hit.EndLine}");
-            location = Paint("1;36", location);
+            var heading = Paint("1;36", location);
+            if (!compact || scoreInCompact)
+                heading += "  " + Paint("2", hit.Score.ToString("0.000", CultureInfo.InvariantCulture));
             if (compact)
             {
-                writer.WriteLine(location);
+                writer.WriteLine(heading);
                 continue;
             }
 
-            writer.WriteLine(FormattableString.Invariant($"  {i + 1}. {location}  {Paint("2", hit.Score.ToString("0.000", CultureInfo.InvariantCulture))}"));
+            writer.WriteLine(FormattableString.Invariant($"  {i + 1}. {heading}"));
             writer.WriteLine("     " + Preview(hit.Chunk));
         }
     }

@@ -38,8 +38,9 @@ opens the SQLite database, which uses WAL shared memory.
 ### Output formats
 
 Interactive `search` defaults to ranked, highlighted `path:line[-line]`
-locations. Add `--format text` for scores and short previews. Redirected
-output still defaults to full JSON, so existing scripts work unchanged.
+locations followed by cosine similarity scores. Add `--format text` for
+short previews. Redirected output still defaults to full JSON, so existing
+scripts work unchanged.
 Use `--format json` to request that format explicitly or `--format compact`
 for plain, uncolored locations. Terminal styling honors
 [`NO_COLOR`](https://no-color.org/) and `--color auto|never|always`.
